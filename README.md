@@ -21,12 +21,12 @@ Each DGX Spark has 2× QSFP112 ports (ConnectX-7). Three point-to-point DAC link
         /               \
    QSFP112            QSFP112
       /                   \
- Escher (DGX) --------- muse (storage box)
+ escher (DGX) --------- muse (storage box)
    QSFP112   QSFP112   (dual-port ConnectX-6 Dx)
 ```
 
-- **bosch ↔ Escher**: NCCL / RoCE clustering link for the resident/dense shards (NVIDIA-approved QSFP112 DAC; a generic FS 400G DAC has also been observed training at 200G).
-- **bosch ↔ muse** and **Escher ↔ muse**: expert stream, NVMe-oF over RDMA (RoCEv2), QSFP56 200G DACs. QSFP56 DACs plug directly into QSFP112 cages (same 4-lane form factor; the CX-7 negotiates down).
+- **bosch ↔ escher**: NCCL / RoCE clustering link for the resident/dense shards (NVIDIA-approved QSFP112 DAC; a generic FS 400G DAC has also been observed training at 200G).
+- **bosch ↔ muse** and **escher ↔ muse**: expert stream, NVMe-oF over RDMA (RoCEv2), QSFP56 200G DACs. QSFP56 DACs plug directly into QSFP112 cages (same 4-lane form factor; the CX-7 negotiates down).
 
 ### GB10 ConnectX-7 quirks you must know
 
@@ -36,7 +36,7 @@ Each DGX Spark has 2× QSFP112 ports (ConnectX-7). Three point-to-point DAC link
 
 ## Why 256 GB RAM on the storage box is the whole point
 
-Both Sparks read the **same** read-only expert set. The storage box's Linux page cache therefore acts as a **shared warm-expert L2**: an expert pulled for bosch is already RAM-resident when Escher asks. EPYC's 8 DDR4 channels (~150 GB/s) fan that cache out to both links. RAM size directly buys aggregate tok/s — it is the best €/token on the storage side. The SSDs only need to cover cache misses.
+Both Sparks read the **same** read-only expert set. The storage box's Linux page cache therefore acts as a **shared warm-expert L2**: an expert pulled for bosch is already RAM-resident when escher asks. EPYC's 8 DDR4 channels (~150 GB/s) fan that cache out to both links. RAM size directly buys aggregate tok/s — it is the best €/token on the storage side. The SSDs only need to cover cache misses.
 
 ## Parts list (storage box "muse")
 
@@ -105,4 +105,4 @@ Do whatever you want with this design. If you build it, open an issue with your 
 
 ---
 
-*Named after the guy who parted a large body of water so his people could cross. Here it's expert weights crossing a QSFP link, served by a host called `muse` to two Sparks called `bosch` and `Escher`. The metaphor is load-bearing.*
+*Named after the guy who parted a large body of water so his people could cross. Here it's expert weights crossing a QSFP link, served by a host called `muse` to two Sparks called `bosch` and `escher`. The metaphor is load-bearing.*

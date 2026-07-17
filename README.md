@@ -105,4 +105,4 @@ Do whatever you want with this design. If you build it, open an issue with your 
 
 ---
 
-*Named after the guy who parted a large body of water so his people could cross. Here it's expert weights crossing a QSFP link, served by a host called `muse` to two Sparks called `bosch` and `escher`. The metaphor is load-bearing.*
+*Named after the guy who parted a large body of water so his people could cross. Here it's expert weights crossing a QSFP link, served by a host called `muse` to two Sparks called `bosch` and `escher`.*

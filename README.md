@@ -6,7 +6,7 @@
 
 ## The problem
 
-DeepSeek V3/R1-class models are ~671B parameters. Two DGX Sparks give you 256 GB of combined LPDDR5X — not enough for the full weight set, even at int4 (~370 GB for one expert set). But MoE models only *activate* ~37B parameters per token, and expert selection is highly predictable (~72% router hit rate on a warm cache in prior work).
+DeepSeek V3/R1-class models are **671B total parameters, ~37B activated per token** (verified: [DeepSeek-V3 report](https://arxiv.org/abs/2412.19437)). Two DGX Sparks give you 256 GB of combined LPDDR5X — not enough for the full weight set, even at 4-bit (**~335 GB naive int4; a real DeepSeek-V3 Q4_K_M GGUF weighs ~404 GB**). But MoE models only *activate* ~37B params per token, and expert selection is highly predictable (~72% hit rate on a warm cache in prior work — see the flashing-light caveat under performance).
 
 So: keep the dense/shared weights and hot experts resident on the Sparks, and **page cold experts over the network** from a box whose only jobs are (a) a big shared page cache and (b) fast sequential reads.
 
@@ -22,12 +22,12 @@ Each DGX Spark has 2× QSFP112 ports (ConnectX-7). Three point-to-point DAC link
    QSFP112            QSFP112
       /                   \
  escher (DGX) --------- muse (storage box)
-   QSFP112   QSFP112   (2× 1-port CX-6 Dx, 200G each)
+   QSFP112   QSFP112   (2× 1-port 200G RoCE NIC)
 ```
 
 - **bosch ↔ escher**: NCCL / RoCE clustering link for the resident/dense shards (NVIDIA-approved QSFP112 DAC; a generic FS 400G DAC has also been observed training at 200G).
 - **bosch ↔ muse** and **escher ↔ muse**: expert stream, NVMe-oF over RDMA (RoCEv2), QSFP56 200G DACs. QSFP56 DACs plug directly into QSFP112 cages (same 4-lane form factor; the CX-7 negotiates down).
-- **muse NIC — read this before you buy:** a ConnectX-6 Dx does **2× 100G *or* 1× 200G**, never 2× 200G — its PCIe 4.0 x16 bus caps the whole card at 200G aggregate. So the *dual-port* `MCX623106…-CDAT` gives each Spark only **100G**. To feed **200G to each Spark**, muse needs **two single-port 200G cards** (`MCX623105…-VDAT`), one per PCIe x16 slot, one DAC per Spark → 400G aggregate egress, which the 8-channel RAM cache can source on hits. (Bonding two 100G MACs into 200G is a *Spark-side* ConnectX-7 quirk; muse's native 200G ports skip that dance.)
+- **muse NIC — read this before you buy:** a ConnectX-6 Dx does **2× 100G *or* 1× 200G**, never 2× 200G — its PCIe 4.0 x16 bus caps the whole card at 200G aggregate ([datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/networking/ethernet-adapters/connectX-6-dx-datasheet.pdf)). To feed **200G to each Spark** you need **two single-port 200G cards**, one per PCIe x16 slot, one DAC per Spark → 400G aggregate egress, which the 8-channel RAM cache can source on hits. muse runs a *software* nvmet-rdma target, so it needs only a **200G RoCE** NIC — **not** the Dx-specific offloads — which opens up cheaper parts (see the NIC row). (Bonding two 100G MACs into 200G is a *Spark-side* ConnectX-7 quirk; native 200G ports skip that dance.)
 
 ### GB10 ConnectX-7 quirks you must know
 
@@ -37,48 +37,59 @@ Each DGX Spark has 2× QSFP112 ports (ConnectX-7). Three point-to-point DAC link
 
 ## Why 256 GB RAM on the storage box is the whole point
 
-Both Sparks read the **same** read-only expert set. The storage box's Linux page cache therefore acts as a **shared warm-expert L2**: an expert pulled for bosch is already RAM-resident when escher asks. EPYC's 8 DDR4 channels (~150 GB/s) fan that cache out to both links. RAM size directly buys aggregate tok/s.
+Both Sparks read the **same** read-only expert set. The storage box's Linux page cache therefore acts as a **shared warm-expert L2**: an expert pulled for bosch is already RAM-resident when escher asks. EPYC's 8 DDR4 channels (~150 GB/s realistic; 205 GB/s theoretical) fan that cache out to both links. RAM size buys SSD-miss avoidance.
 
-> **Mid-2026 caveat:** the DDR4 price spike (see parts list) has made this tier far pricier than at first draft. The *bandwidth* argument stands — RAM latency/throughput for the shared cache can't be matched by SSD. The *€/token* argument is now weak: at ~€8/GB for RDIMM vs ~€0.12/GB for NVMe, the RAM tier costs ~65× per GB of the SSD miss tier. Size the RAM tier to what you can afford and let the SSD stripe absorb more misses.
-
-The SSDs cover cache misses.
+> **Mid-2026 caveat:** the DDR4 price spike (see parts list) has made this tier far pricier than at first draft. The *bandwidth/latency* argument stands — RAM for the shared cache can't be matched by SSD. The *€/token* argument is now weak: at ~€8/GB for RDIMM vs ~€0.12/GB for NVMe, the RAM tier costs ~65× per GB of the SSD miss tier. Also note (see performance) that **muse-RAM hits still cross the link** — the RAM tier saves SSD latency, not link bandwidth. Size it to what you can afford and let the SSD stripe absorb more misses.
 
 ## Parts list (storage box "muse")
 
-Prices **researched 2026-07-17** against [Geizhals.de](https://geizhals.de) and eBay.de — not estimated. Headline finding: the **2025–26 DRAM + NAND supercycle** roughly **doubled** this build versus the first-draft floor. DDR4 RDIMM and 2 TB NVMe both spiked hard. Buy **used**; treat *new* retail as the ceiling.
+Prices **researched 2026-07-17** against [Geizhals.de](https://geizhals.de), German resellers, and eBay.de — not estimated. Headline finding: the **2025–26 DRAM + NAND supercycle** plus **200G NIC pricing** roughly **tripled** this build versus the first-draft floor. Buy **used** where a used market exists (RAM, board, CPU, SSD); NICs mostly don't have one in DE.
 
 | Part | SKU | ~€ (mid-2026) |
 |---|---|---|
 | Motherboard | ASRock Rack **ROMED8-2T** or Supermicro **H12SSL-i** (SP3, PCIe 4.0). *Avoid proprietary-WIO boards (e.g. H12SSW-NT) unless doing a rackmount build — they need risers + a WIO chassis.* | ROMED8-2T **~790 new** (Geizhals); H12SSL-i used **~450–650** |
 | CPU | AMD **EPYC 7302P** (16c Rome; "P" = 1P-locked, cheaper, fine for single-socket muse) or **7313** (Milan) | 7302P **353–445 new** (Geizhals); **~130–200 used** (eBay.de). Verify **not vendor/PSB-locked** and **not an ES/QS** |
 | RAM | **8× 32 GB DDR4-3200 ECC RDIMM** (Samsung M393A4K40DB3-CWE) | **~552/stick new DE** (362 EU) → ~4.4k new; **~2100 used** for the 8-kit (~262/stick — a *good* price today) |
-| NIC | **2× ConnectX-6 Dx single-port 200GbE** (MCX623105A{S,N}-VDAT), one DAC per Spark. *A CX-6 Dx is 2×100G **or** 1×200G — the dual-port MCX623106-CDAT can't do 200G/port. Needs two x16 slots; ROMED8-2T has 7.* | **~400–700 ea used** (estimate) **× 2** |
+| NIC (200G/Spark) | **2× single-port 200GbE RoCE**, one DAC per Spark. muse needs 200G RoCE, **not** Dx offloads. Cheapest new in DE: ConnectX-6 VPI **MCX653105A-HDAT ~1283** (fs.com). Dx VDAT: **AC-VDAT ~1396** (servershop-bayern), **AN-VDAT ~1575** (Geizhals); AS-VDAT is EOL/import-only. Used -VDAT rarely listed in DE. | **~1283–1575 ea new → ~2.6–3.2k for two** |
+| NIC (100G/Spark day-1 alt) | 1× dual-port **MCX623106AN-CDAT** (2×100G), or a used ConnectX-5 2×100G | ~866 new (Geizhals) / ~150–300 used |
 | Cables | 2× QSFP56 200G DAC (FS Q56-PC0xx / Mellanox MCP1650-V001E30); keep a QSFP28 100G DAC as fallback | **~40–80 ea** |
-| SSDs | 4× Gen4 NVMe 2 TB striped (~28 GB/s) — WD **SN850X** or Lexar **NM790** — on an ASUS Hyper M.2 x16 carrier (board must expose x4x4x4x4 bifurcation; H12SSL-i and ROMED8-2T do) | **~230–275 ea** (Geizhals; SN850X ~275, NM790 ~230 — was ~100) |
-| Cooler / PSU / case | Noctua NH-U14S TR4-SP3, 650 W Gold, any case with airflow over the M.2 carrier | **~280** (estimate) |
+| SSDs | 4× Gen4 NVMe 2 TB striped (~28 GB/s) — WD **SN850X** or Lexar **NM790** — on an ASUS Hyper M.2 x16 carrier (x4x4x4x4 bifurcation; H12SSL-i and ROMED8-2T do) | **~230–275 ea** (Geizhals; was ~100) |
+| Cooler / PSU / case | Noctua NH-U14S TR4-SP3, 650 W Gold, airflow over the M.2 carrier | **~280** (estimate) |
 
-**Realistic all-in (used where sane): ~€4.8–5.9 k** — up from the first draft's €1.7–2.8 k. RAM and NVMe drove most of it; the corrected NIC spec (two single-port 200G cards, not one dual-port) adds ~€0.4–0.9 k. New-retail all-in is far higher (RAM alone €2.9–4.4 k). The NVMe-oF target does essentially no CPU work — you are buying **PCIe lanes and memory channels**, not cores.
+**Realistic all-in (used where a used market exists):**
+- **200G-per-Spark target: ~€6.8–7.6 k.** The two 200G NICs (~€2.6–3.2 k new) now rival RAM as the biggest line — **200G networking is ~40% of the build.** That is the real price of the 5–8 tok/s tier.
+- **100G-per-Spark day-1: ~€4.4–5.1 k.** One dual-port 2×100G card (~€866 new, or a used CX-5 ~€200) gets the 2–4 tok/s baseline; upgrade the NICs to reach 200G later.
 
-**Budget lever — 8× 16 GB, not 4× 32 GB.** You must populate all 8 channels for bandwidth, so you can't just buy half the sticks (that drops muse to 4-channel and halves fan-out). **8× 16 GB (128 GB)** keeps full 8-channel bandwidth at roughly half the RAM cost — the sane v1; expand later (DDR4 won't get cheaper).
+Up from the first draft's €1.7–2.8 k — RAM, NVMe, *and* the 200G NICs each roughly doubled or worse. New-retail all-in is higher still (RAM alone €2.9–4.4 k new). The NVMe-oF target does essentially no CPU work — you are buying **PCIe lanes and memory channels**, not cores.
+
+**Budget lever — 8× 16 GB, not 4× 32 GB.** All 8 channels must be populated for bandwidth, so you can't just buy half the sticks (that drops muse to 4-channel and halves fan-out). **8× 16 GB (128 GB)** keeps full 8-channel bandwidth at roughly half the RAM cost — a sane v1; expand later.
 
 Compute side (not included): 2× DGX Spark, which you presumably already regret buying.
 
-*Prices are point-in-time snapshots (2026-07-17) from German retail (Geizhals) and used listings (eBay.de). NIC, DAC, and case rows are estimates pending firm quotes. Verify before buying — this market moves weekly.*
+*Prices are point-in-time snapshots (2026-07-17) from German retail (Geizhals, servershop-bayern, fs.com) and used listings (eBay.de). DAC and case rows remain estimates. Verify before buying — this market moves weekly.*
 
 ## Expected performance (back of envelope)
 
-DeepSeek int4, ~37B active params/token, most of it routed experts:
+DeepSeek-V3 at int4, 37B active params/token — of which **~20B are routed-expert weight** (8 experts × 58 MoE layers × ~44M params/expert), the streamable part; the other ~17B (MLA attention, 3 dense layers, shared expert, embeddings) stays resident. So the **per-token streamable load ≈ 10 GB at int4** (20B × 0.5 B). *(Split derived from the [published config](https://arxiv.org/abs/2412.19437).)*
 
-| Link config | Bandwidth | Est. token ceiling* | muse NIC needed† |
-|---|---|---|---|
-| 100G per Spark (day 1) | ~12.5 GB/s | ~2–4 tok/s | 1× dual-port 2×100G (MCX623106-CDAT) |
-| 200G per Spark | ~25 GB/s | ~5–8 tok/s | 2× single-port 200G (MCX623105-VDAT) |
+**Only the not-already-resident fraction of that ~10 GB crosses the link.** The two Sparks hold 256 GB LPDDR5X; a naive-int4 model is ~335 GB (~327 GB of it routed experts). After dense weights (~8 GB) and KV-cache / activation / OS overhead (~40 GB), roughly **~207 GB — about 55–63% of the routed-expert weight — pins locally.** With hot-expert access skew, that gives an estimated **~65–72% local hit rate → ~3–5 GB paged from muse per token.**
 
-\* Assuming ~72% of expert fetches are absorbed by the muse RAM tier + locally pinned hot experts, leaving ~3–5 GB of miss traffic per token. These numbers are hypotheses to be destroyed by measurement, not promises.
+| Link config | Link BW | Paged/token | Est. token ceiling | muse NIC |
+|---|---|---|---|---|
+| 100G per Spark (day 1) | ~12.5 GB/s | ~3–5 GB | ~2–4 tok/s | 1× dual-port 2×100G |
+| 200G per Spark | ~25 GB/s | ~3–5 GB | ~5–8 tok/s | 2× single-port 200G |
 
-† A ConnectX-6 Dx caps at 200G aggregate (PCIe 4.0 x16), so one card cannot do 200G to *both* Sparks — hence two single-port cards for the 200G row. The "bonded" 200G is a Spark-side ConnectX-7 detail (2×100G MACs → 200G per cage); muse's 200G ports are native and need no bonding.
+**The link is the bottleneck — confirmed two independent ways:**
+- **Spark memory-bound ceiling:** 18.5 GB/token (37B × 0.5 B) ÷ 273 GB/s LPDDR5X ≈ **~15 tok/s** per Spark.
+- **Compute-bound ceiling:** ~74 GFLOP/token (2×37e9) vs GB10's **1 PFLOP FP4** → **>1000 tok/s.**
 
-The big software lever: **router-logit prefetching** — request next-layer experts while the current layer computes, hiding link latency behind GPU work.
+Both are far above the link-bound 5–8, so the link binds first — which is the entire reason MoESES exists. *(Spark specs verified: 128 GB/273 GB/s per unit, 1 PFLOP FP4 — [StorageReview](https://www.storagereview.com/review/nvidia-dgx-spark-review-the-ai-appliance-bringing-datacenter-capabilities-to-desktops), [NVIDIA](https://www.nvidia.com/en-us/products/workstations/dgx-spark/).)*
+
+**⚠️ The load-bearing assumption.** The ~72% is a **local-residency** hit rate (weights on the Spark, zero link traffic) — **not** a muse-RAM hit, because muse-RAM bytes still cross the link (the RAM tier saves *SSD latency*, not *link bandwidth*). It is imported from prior CPU-cache work, **unverified for DeepSeek-V3 on this hardware**, and the whole table swings on it: at 55% local hit ≈ 3 tok/s, at 85% ≈ 11. **Measure this before trusting any tok/s number here.**
+
+**Performance lever:** a lighter dynamic-4-bit build (~340–370 GB) instead of Q4_K_M (~404 GB) raises local residency → raises the hit rate → raises tok/s. Quant choice is a throughput knob, not just a disk-space one.
+
+The big software lever remains **router-logit prefetching** — request next-layer experts while the current layer computes, hiding link latency behind GPU work.
 
 ## Software plan
 
@@ -99,22 +110,23 @@ The missing piece to build: ggml has no concept of "this tensor is not resident 
 
 1. **Protocol validation (0 €):** `nvme connect -t rdma` from bosch to a throwaway `nvmet-rdma` target on any Linux box with any RDMA NIC (an old ConnectX-3/4 suffices). Proves DGX-OS talks NVMe-oF/RoCE to third-party hardware before money moves.
 2. **muse build + link bring-up:** firmware-update + cold-drain both Sparks, perftest each link, verify QSFP56 DAC trains in the QSFP112 cage.
-3. **Naive baseline:** mmap DeepSeek expert set over NVMe-oF, run unmodified llama.cpp, measure. Zero code.
+3. **Naive baseline:** mmap DeepSeek expert set over NVMe-oF, run unmodified llama.cpp, measure — *and measure the real local-residency hit rate, the number the whole design rests on.*
 4. **Bonding:** 2× 100G MACs → 200G per Spark, re-measure.
 5. **Async prefetcher:** router-logit-driven expert prefetch in the llama.cpp fork. This is where the tok/s lives.
 
 ## Risk register
 
 - RoCE to third-party target on *this specific* DGX-OS image: high confidence, unverified. Milestone 1 exists for exactly this. NVMe/TCP is the fallback.
+- **The 72% local-residency hit rate is the design's single biggest unknown** (see performance). It's borrowed from other work and unmeasured here; tok/s scales almost linearly with it. Milestone 3 must measure it before any hardware past the baseline is justified.
+- **NIC cost shock.** Single-port 200G cards are ~€1.3–1.6 k each new in DE and you need two (~€2.6–3.2 k) — ~40% of the build; used -VDAT rarely surfaces. muse needs only a 200G RoCE NIC (not Dx offloads), so a ConnectX-6 VPI (MCX653105A-HDAT) or a used CX-5/CX-6 is a legitimate cheaper substitute — verify RoCE + nvmet-rdma on it first.
+- **Memory + NAND supercycle (materialized).** This RDIMM SKU is ~€552/stick new and 2 TB NVMe ~€230–275 as of 2026-07. Used is the only sane path; buy RAM first, consider the 8× 16 GB start.
+- Used EPYC hazard: confirm the CPU is **not vendor/PSB-locked** and **not an engineering sample** before paying.
 - QSFP112 cage ↔ QSFP56 DAC negotiation: expected fine, test before bulk-buying cables.
-- **Memory + NAND supercycle (materialized).** The "DDR4 rising" risk hit hard: as of 2026-07 this RDIMM SKU is ~€552/stick new (Geizhals) and 2 TB NVMe ~€230–275 — together roughly doubling the build. Used is now the only sane path, and prices aren't coming back down soon. Buy RAM first; consider the 8× 16 GB start.
-- Used EPYC hazard: confirm the CPU is **not vendor/PSB-locked** to an OEM and is **not an engineering sample** before paying.
-- NIC gotcha (see topology): budget for **two** single-port 200G cards if you want 200G per Spark — one dual-port card can't do it.
 - The prefetcher is real systems work. The hardware is the easy half.
 
 ## License / contributing
 
-Do whatever you want with this design. If you build it, open an issue with your numbers — especially tok/s at milestones 3–5 and whether the QSFP56 DAC trained cleanly. Benchmarks > opinions.
+Do whatever you want with this design. If you build it, open an issue with your numbers — especially the measured local-residency hit rate and tok/s at milestones 3–5, and whether the QSFP56 DAC trained cleanly. Benchmarks > opinions.
 
 ---
 

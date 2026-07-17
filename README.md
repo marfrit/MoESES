@@ -22,11 +22,12 @@ Each DGX Spark has 2× QSFP112 ports (ConnectX-7). Three point-to-point DAC link
    QSFP112            QSFP112
       /                   \
  escher (DGX) --------- muse (storage box)
-   QSFP112   QSFP112   (dual-port ConnectX-6 Dx)
+   QSFP112   QSFP112   (2× 1-port CX-6 Dx, 200G each)
 ```
 
 - **bosch ↔ escher**: NCCL / RoCE clustering link for the resident/dense shards (NVIDIA-approved QSFP112 DAC; a generic FS 400G DAC has also been observed training at 200G).
 - **bosch ↔ muse** and **escher ↔ muse**: expert stream, NVMe-oF over RDMA (RoCEv2), QSFP56 200G DACs. QSFP56 DACs plug directly into QSFP112 cages (same 4-lane form factor; the CX-7 negotiates down).
+- **muse NIC — read this before you buy:** a ConnectX-6 Dx does **2× 100G *or* 1× 200G**, never 2× 200G — its PCIe 4.0 x16 bus caps the whole card at 200G aggregate. So the *dual-port* `MCX623106…-CDAT` gives each Spark only **100G**. To feed **200G to each Spark**, muse needs **two single-port 200G cards** (`MCX623105…-VDAT`), one per PCIe x16 slot, one DAC per Spark → 400G aggregate egress, which the 8-channel RAM cache can source on hits. (Bonding two 100G MACs into 200G is a *Spark-side* ConnectX-7 quirk; muse's native 200G ports skip that dance.)
 
 ### GB10 ConnectX-7 quirks you must know
 
@@ -51,12 +52,12 @@ Prices **researched 2026-07-17** against [Geizhals.de](https://geizhals.de) and 
 | Motherboard | ASRock Rack **ROMED8-2T** or Supermicro **H12SSL-i** (SP3, PCIe 4.0). *Avoid proprietary-WIO boards (e.g. H12SSW-NT) unless doing a rackmount build — they need risers + a WIO chassis.* | ROMED8-2T **~790 new** (Geizhals); H12SSL-i used **~450–650** |
 | CPU | AMD **EPYC 7302P** (16c Rome; "P" = 1P-locked, cheaper, fine for single-socket muse) or **7313** (Milan) | 7302P **353–445 new** (Geizhals); **~130–200 used** (eBay.de). Verify **not vendor/PSB-locked** and **not an ES/QS** |
 | RAM | **8× 32 GB DDR4-3200 ECC RDIMM** (Samsung M393A4K40DB3-CWE) | **~552/stick new DE** (362 EU) → ~4.4k new; **~2100 used** for the 8-kit (~262/stick — a *good* price today) |
-| NIC | Mellanox **ConnectX-6 Dx MCX623106AS-CDAT** (2× QSFP56, 100GbE/port) | **~350–550 used** (estimate — not firmly quoted) |
+| NIC | **2× ConnectX-6 Dx single-port 200GbE** (MCX623105A{S,N}-VDAT), one DAC per Spark. *A CX-6 Dx is 2×100G **or** 1×200G — the dual-port MCX623106-CDAT can't do 200G/port. Needs two x16 slots; ROMED8-2T has 7.* | **~400–700 ea used** (estimate) **× 2** |
 | Cables | 2× QSFP56 200G DAC (FS Q56-PC0xx / Mellanox MCP1650-V001E30); keep a QSFP28 100G DAC as fallback | **~40–80 ea** |
 | SSDs | 4× Gen4 NVMe 2 TB striped (~28 GB/s) — WD **SN850X** or Lexar **NM790** — on an ASUS Hyper M.2 x16 carrier (board must expose x4x4x4x4 bifurcation; H12SSL-i and ROMED8-2T do) | **~230–275 ea** (Geizhals; SN850X ~275, NM790 ~230 — was ~100) |
 | Cooler / PSU / case | Noctua NH-U14S TR4-SP3, 650 W Gold, any case with airflow over the M.2 carrier | **~280** (estimate) |
 
-**Realistic all-in (used where sane): ~€4.3–5.2 k** — up from the first draft's €1.7–2.8 k, almost entirely RAM and NVMe. New-retail all-in is far higher (RAM alone €2.9–4.4 k). The NVMe-oF target does essentially no CPU work — you are buying **PCIe lanes and memory channels**, not cores.
+**Realistic all-in (used where sane): ~€4.8–5.9 k** — up from the first draft's €1.7–2.8 k. RAM and NVMe drove most of it; the corrected NIC spec (two single-port 200G cards, not one dual-port) adds ~€0.4–0.9 k. New-retail all-in is far higher (RAM alone €2.9–4.4 k). The NVMe-oF target does essentially no CPU work — you are buying **PCIe lanes and memory channels**, not cores.
 
 **Budget lever — 8× 16 GB, not 4× 32 GB.** You must populate all 8 channels for bandwidth, so you can't just buy half the sticks (that drops muse to 4-channel and halves fan-out). **8× 16 GB (128 GB)** keeps full 8-channel bandwidth at roughly half the RAM cost — the sane v1; expand later (DDR4 won't get cheaper).
 
@@ -68,12 +69,14 @@ Compute side (not included): 2× DGX Spark, which you presumably already regret 
 
 DeepSeek int4, ~37B active params/token, most of it routed experts:
 
-| Link config | Bandwidth | Est. token ceiling* |
-|---|---|---|
-| 100G unbonded (day 1) | ~12.5 GB/s | ~2–4 tok/s |
-| 200G bonded per Spark | ~25 GB/s | ~5–8 tok/s |
+| Link config | Bandwidth | Est. token ceiling* | muse NIC needed† |
+|---|---|---|---|
+| 100G per Spark (day 1) | ~12.5 GB/s | ~2–4 tok/s | 1× dual-port 2×100G (MCX623106-CDAT) |
+| 200G per Spark | ~25 GB/s | ~5–8 tok/s | 2× single-port 200G (MCX623105-VDAT) |
 
 \* Assuming ~72% of expert fetches are absorbed by the muse RAM tier + locally pinned hot experts, leaving ~3–5 GB of miss traffic per token. These numbers are hypotheses to be destroyed by measurement, not promises.
+
+† A ConnectX-6 Dx caps at 200G aggregate (PCIe 4.0 x16), so one card cannot do 200G to *both* Sparks — hence two single-port cards for the 200G row. The "bonded" 200G is a Spark-side ConnectX-7 detail (2×100G MACs → 200G per cage); muse's 200G ports are native and need no bonding.
 
 The big software lever: **router-logit prefetching** — request next-layer experts while the current layer computes, hiding link latency behind GPU work.
 
@@ -106,6 +109,7 @@ The missing piece to build: ggml has no concept of "this tensor is not resident 
 - QSFP112 cage ↔ QSFP56 DAC negotiation: expected fine, test before bulk-buying cables.
 - **Memory + NAND supercycle (materialized).** The "DDR4 rising" risk hit hard: as of 2026-07 this RDIMM SKU is ~€552/stick new (Geizhals) and 2 TB NVMe ~€230–275 — together roughly doubling the build. Used is now the only sane path, and prices aren't coming back down soon. Buy RAM first; consider the 8× 16 GB start.
 - Used EPYC hazard: confirm the CPU is **not vendor/PSB-locked** to an OEM and is **not an engineering sample** before paying.
+- NIC gotcha (see topology): budget for **two** single-port 200G cards if you want 200G per Spark — one dual-port card can't do it.
 - The prefetcher is real systems work. The hardware is the easy half.
 
 ## License / contributing

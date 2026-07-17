@@ -64,7 +64,7 @@ Up from the first draft's €1.7–2.8 k — RAM, NVMe, *and* the 200G NICs each
 
 **Budget lever — 8× 16 GB, not 4× 32 GB.** All 8 channels must be populated for bandwidth, so you can't just buy half the sticks (that drops muse to 4-channel and halves fan-out). **8× 16 GB (128 GB)** keeps full 8-channel bandwidth at roughly half the RAM cost — a sane v1; expand later.
 
-Compute side (not included): 2× DGX Spark, which you presumably already regret buying.
+Compute side (not included): 2× DGX Spark, which you presumably already regret buying — and the economics section below explains why.
 
 *Prices are point-in-time snapshots (2026-07-17) from German retail (Geizhals, servershop-bayern, fs.com) and used listings (eBay.de). DAC and case rows remain estimates. Verify before buying — this market moves weekly.*
 
@@ -90,6 +90,30 @@ Both are far above the link-bound 5–8, so the link binds first — which is th
 **Performance lever:** a lighter dynamic-4-bit build (~340–370 GB) instead of Q4_K_M (~404 GB) raises local residency → raises the hit rate → raises tok/s. Quant choice is a throughput knob, not just a disk-space one.
 
 The big software lever remains **router-logit prefetching** — request next-layer experts while the current layer computes, hiding link latency behind GPU work.
+
+## Does this even pencil out? (no)
+
+Build MoESES for sovereignty, offline operation, or research — **not** to save money. On pure €/token it loses to the DeepSeek API by more than an order of magnitude, and that's worth stating plainly before anyone orders parts.
+
+**The killer number is electricity, before any hardware.** At ~6 tok/s (mid of the 200G range) the rig draws ~550 W (2× Spark @ ~140 W + muse ~270 W). One million output tokens takes ~46 h to generate → ~25 kWh → **~€9 in German electricity** (@ ~€0.35/kWh, [BDEW 2026](https://www.cleanenergywire.org/factsheets/what-german-households-pay-electricity)). The **DeepSeek V3 API charges ~€0.37 per 1M output tokens** ($0.40; V4 Flash is $0.28 — [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/)). So **generating locally costs ~24× the API price in electricity alone** — before a cent of hardware.
+
+**Capital never amortizes.** Flat-out 24/7 the rig makes ~189M tokens/year, worth **~€70/year** at V3 API rates:
+
+| | Cost | Payback vs API |
+|---|---|---|
+| muse box (Sparks treated as sunk) | ~€7 k | ~100 years |
+| muse + 2× DGX Spark (~€4.5 k ea) | ~€16 k | ~230 years |
+| Electricity, 24/7 | ~€1.7 k/yr | operating cost alone ≈ 24× the token value |
+
+The hardware is obsolete long before payback. Batch/throughput serving amortizes expert fetches across concurrent sequences and improves €/token — but nowhere near 24×; the API still wins on cost.
+
+**So why build it?** The reasons are real, just not financial:
+- **Data sovereignty** — prompts and outputs never leave your premises. For some work that's the whole ballgame.
+- **Offline / air-gapped** operation — no internet dependency, no metering, no rate limits, no ToS.
+- **No provider risk** — DeepSeek folded `R1` into `V4 Flash` mid-2026 on ~a month's notice; a local model you've pinned can't be retired under you.
+- **It's a research project** — the async expert pager is the interesting part. "Call for builders / free evaluation / YouTube video" was always the actual point.
+
+If you want cheap DeepSeek tokens, use the API — ~€0.37/M, no soldering iron. If you want to *own* the capability, read on.
 
 ## Software plan
 
@@ -119,6 +143,7 @@ The missing piece to build: ggml has no concept of "this tensor is not resident 
 - RoCE to third-party target on *this specific* DGX-OS image: high confidence, unverified. Milestone 1 exists for exactly this. NVMe/TCP is the fallback.
 - **The 72% local-residency hit rate is the design's single biggest unknown** (see performance). It's borrowed from other work and unmeasured here; tok/s scales almost linearly with it. Milestone 3 must measure it before any hardware past the baseline is justified.
 - **NIC cost shock.** Single-port 200G cards are ~€1.3–1.6 k each new in DE and you need two (~€2.6–3.2 k) — ~40% of the build; used -VDAT rarely surfaces. muse needs only a 200G RoCE NIC (not Dx offloads), so a ConnectX-6 VPI (MCX653105A-HDAT) or a used CX-5/CX-6 is a legitimate cheaper substitute — verify RoCE + nvmet-rdma on it first.
+- **Economics (see above).** This never beats the DeepSeek API on cost — electricity alone is ~24× the API token price. Build only if sovereignty/offline/research is worth it to you.
 - **Memory + NAND supercycle (materialized).** This RDIMM SKU is ~€552/stick new and 2 TB NVMe ~€230–275 as of 2026-07. Used is the only sane path; buy RAM first, consider the 8× 16 GB start.
 - Used EPYC hazard: confirm the CPU is **not vendor/PSB-locked** and **not an engineering sample** before paying.
 - QSFP112 cage ↔ QSFP56 DAC negotiation: expected fine, test before bulk-buying cables.

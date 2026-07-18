@@ -85,7 +85,7 @@ DeepSeek-V3 at int4, 37B active params/token — of which **~20B are routed-expe
 
 Both are far above the link-bound 5–8, so the link binds first — which is the entire reason MoESES exists. *(Spark specs verified: 128 GB/273 GB/s per unit, 1 PFLOP FP4 — [StorageReview](https://www.storagereview.com/review/nvidia-dgx-spark-review-the-ai-appliance-bringing-datacenter-capabilities-to-desktops), [NVIDIA](https://www.nvidia.com/en-us/products/workstations/dgx-spark/).)*
 
-**⚠️ The load-bearing assumption.** The ~72% is a **local-residency** hit rate (weights on the Spark, zero link traffic) — **not** a muse-RAM hit, because muse-RAM bytes still cross the link (the RAM tier saves *SSD latency*, not *link bandwidth*). It is imported from prior CPU-cache work, **unverified for DeepSeek-V3 on this hardware**, and the whole table swings on it: at 55% local hit ≈ 3 tok/s, at 85% ≈ 11. **Measure this before trusting any tok/s number here.**
+**⚠️ The assumption everything rests on.** The ~72% is a **local-residency** hit rate (weights on the Spark, zero link traffic) — **not** a muse-RAM hit, because muse-RAM bytes still cross the link (the RAM tier saves *SSD latency*, not *link bandwidth*). It is imported from prior CPU-cache work, **unverified for DeepSeek-V3 on this hardware**, and the whole table swings on it: at 55% local hit ≈ 3 tok/s, at 85% ≈ 11. **Measure this before trusting any tok/s number here.**
 
 **Performance lever:** a lighter dynamic-4-bit build (~340–370 GB) instead of Q4_K_M (~404 GB) raises local residency → raises the hit rate → raises tok/s. Quant choice is a throughput knob, not just a disk-space one.
 
